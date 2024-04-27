@@ -16,8 +16,6 @@ import time
 
 app = Flask(__name__)
 
-imgBackground=cv2.imread("background.png")
-
 datetoday = date.today().strftime("%m_%d_%y")
 datetoday2 = date.today().strftime("%d-%B-%Y")
 
