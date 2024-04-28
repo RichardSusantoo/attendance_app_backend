@@ -10,6 +10,7 @@ import pandas as pd
 import joblib
 import bcrypt
 from flask import Response
+import datetime
 from datetime import date
 from datetime import datetime, timedelta
 import time
@@ -166,9 +167,11 @@ def getclassschedule():
     if request.method == "GET":
         nim = request.args.get('nim')
         if nim:
+            today_day = datetime.now().strftime("%A").lower()
+            print(today_day)
             cursor = connection.cursor()
-            sql_query = "SELECT class_name, class_time FROM jadwalkelas WHERE nim = %s"
-            val = (nim,)
+            sql_query = "SELECT class_name, class_time FROM jadwalkelas WHERE nim = %s AND class_day = %s"
+            val = (nim, today_day)
             cursor.execute(sql_query, val)
             class_schedule = cursor.fetchall()
             cursor.close()
