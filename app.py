@@ -27,6 +27,7 @@ face_detector = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
 
 CORS(app, resources={r"/*": {"origins": "http://localhost:8080"}}, CORS_SUPPORTS_CREDENTIALS=True)
 app.config['CORS_HEADERS'] = 'Content-Type'
+
 try:
     connection = mysql.connector.connect(
         host='localhost',
@@ -43,9 +44,6 @@ if not os.path.isdir('static'):
     os.makedirs('static')
 if not os.path.isdir('static/faces'):
     os.makedirs('static/faces')
-if f'Attendance-{datetoday}.csv' not in os.listdir('Attendance'):
-    with open(f'Attendance/Attendance-{datetoday}.csv', 'w') as f:
-        f.write('Name,Roll,Time')
 
 def extract_faces(img):
     try:
@@ -168,9 +166,8 @@ def getclassschedule():
         nim = request.args.get('nim')
         if nim:
             today_day = datetime.now().strftime("%A").lower()
-            print(today_day)
             cursor = connection.cursor()
-            sql_query = "SELECT class_name, class_time FROM jadwalkelas WHERE nim = %s AND class_day = %s"
+            sql_query = "SELECT class_name, class_time, attendancestatus FROM jadwalkelas WHERE nim = %s AND class_day = %s"
             val = (nim, today_day)
             cursor.execute(sql_query, val)
             class_schedule = cursor.fetchall()
@@ -180,7 +177,8 @@ def getclassschedule():
                 class_time_str = str(class_[1])
                 response_object['data'].append({
                     'class_name': class_[0],
-                    'class_time': class_time_str
+                    'class_time': class_time_str,
+                    'status': class_[2]
                 })
         else:
             response_object['status'] = 'fail'
@@ -221,33 +219,58 @@ def mark_attendance():
     cv2.namedWindow('Attendance')
     cv2.setWindowProperty('Attendance', cv2.WND_PROP_TOPMOST, 1)
     start_time = time.time()
+    
     while True:
         ret, frame = cap.read()
         if not ret:
             break
-        if len(extract_faces(frame)) > 0:
-            (x, y, w, h) = extract_faces(frame)[0]
+        
+        faces = extract_faces(frame)
+        
+        for (x, y, w, h) in faces:
             cv2.rectangle(frame, (x, y), (x+w, y+h), (86, 32, 251), 1)
             cv2.rectangle(frame, (x, y), (x+w, y-40), (86, 32, 251), -1)
+            
             face = cv2.resize(frame[y:y+h, x:x+w], (50, 50))
+            
             identified_person = identify_face(face.reshape(1, -1))[0]
             identified_person_name = identified_person.split('_')[0]
             identified_person_nim = identified_person.split('_')[1]
-            add_attendance(identified_person_name, identified_person_nim)
-            cv2.rectangle(frame, (x,y), (x+w, y+h), (0,0,255), 1)
-            cv2.rectangle(frame,(x,y),(x+w,y+h),(50,50,255),2)
-            cv2.rectangle(frame,(x,y-40),(x+w,y),(50,50,255),-1)
-            cv2.putText(frame, f'{identified_person}', (x,y-15), cv2.FONT_HERSHEY_COMPLEX, 1, (255,255,255), 1)
-            cv2.rectangle(frame, (x,y), (x+w, y+h), (50,50,255), 1)
+            
+            class_schedules = get_class_schedules(identified_person_nim)
+            
+            for class_schedule in class_schedules:
+                add_attendance(identified_person_name, identified_person_nim, class_schedule)
+                
+                
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 0, 255), 1)
+                cv2.rectangle(frame, (x, y), (x+w, y+h), (50, 50, 255), 2)
+                cv2.rectangle(frame, (x, y-40), (x+w, y), (50, 50, 255), -1)
+                cv2.putText(frame, f'{identified_person}', (x,y-15), cv2.FONT_HERSHEY_COMPLEX, 0.4, (255,255,255), 1)
+
+        
         cv2.imshow('Attendance', frame)
+        
         key = cv2.waitKey(1) & 0xFF
-        if key == 27 or time.time() - start_time > 2:  # 27 is the ASCII value for the escape key
+        if key == 27 or time.time() - start_time > 2:
             break
+    
     cap.release()
     cv2.destroyAllWindows()
+    
     return 'Attendance marked!'
 
-def add_attendance(name, nim):
+def get_class_schedules(nim):
+    today_day = datetime.now().strftime("%A").lower()
+    cursor = connection.cursor()
+    sql_query = "SELECT class_name, class_time FROM jadwalkelas WHERE nim = %s AND class_day = %s"
+    val = (nim, today_day)
+    cursor.execute(sql_query, val)
+    class_schedules = cursor.fetchall()
+    cursor.close()
+    return class_schedules
+
+def add_attendance(name, nim, class_schedule):
     cursor = connection.cursor()
 
     query = "SELECT * FROM users WHERE fullname=%s AND nim=%s"
@@ -258,18 +281,33 @@ def add_attendance(name, nim):
         utc_time = datetime.utcnow()
         utc_plus_seven = utc_time + timedelta(hours=7)
         today = utc_plus_seven.date()
-        five_minutes_ago = utc_plus_seven - timedelta(minutes=5)
-        query = "SELECT * FROM attendancehistory WHERE fullname=%s AND nim=%s AND AttendanceDate>=%s AND AttendanceDate<%s"
-        cursor.execute(query, (name, nim, five_minutes_ago, today + timedelta(days=1)))
-        attendance_today = cursor.fetchone()
+        
+        class_time = class_schedule[1]
+        midnight = datetime.combine(today, datetime.min.time())
+        class_time_datetime = midnight + class_time
+        
+        class_time_minus_30 = class_time_datetime - timedelta(minutes=30)
+        class_time_plus_30 = class_time_datetime + timedelta(minutes=30)
+        
+        if utc_plus_seven >= class_time_minus_30 and utc_plus_seven <= class_time_plus_30:
+            query = "SELECT * FROM attendancehistory WHERE fullname=%s AND nim=%s AND class_name=%s AND AttendanceDate>=%s AND AttendanceDate<%s"
+            cursor.execute(query, (name, nim, class_schedule[0], class_time_minus_30, class_time_plus_30))
+            attendance_today = cursor.fetchone()
 
-        if not attendance_today:
-            query = "INSERT INTO attendancehistory (fullname, nim, AttendanceDate) VALUES (%s, %s, %s)"
-            cursor.execute(query, (name, nim, utc_plus_seven))
-            print('Attendance marked successfully!')
-            connection.commit()
+            if not attendance_today:
+                query = "INSERT INTO attendancehistory (fullname, nim, class_name, AttendanceDate) VALUES (%s, %s, %s, %s)"
+                cursor.execute(query, (name, nim, class_schedule[0], utc_plus_seven))
+                connection.commit()
+
+                update_query = "UPDATE jadwalkelas SET attendancestatus = %s WHERE nim = %s AND class_name = %s AND class_time = %s"
+                cursor.execute(update_query, ("Marked", nim, class_schedule[0], class_schedule[1]))
+                connection.commit()
+
+            else:
+                 print(f"{name} already marked attendance within the last 30 minutes.")
+
         else:
-            print(f"{name} already marked attendance within the last 5 minutes.")
+            print(f"Not within 30 minutes of class time for {class_schedule[0]}")
     else:
         print(f"{name} not found in users table")
 
