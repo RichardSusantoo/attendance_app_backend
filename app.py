@@ -4,6 +4,7 @@ import cv2
 import os
 import numpy as np
 from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import confusion_matrix, accuracy_score, classification_report, precision_score, recall_score, f1_score
 import mysql.connector
 from mysql.connector import Error
 import pandas as pd
@@ -11,9 +12,10 @@ import joblib
 import bcrypt
 from flask import Response
 import datetime
-from datetime import date
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 import time
+import seaborn as sns
+import matplotlib.pyplot as plt
 
 app = Flask(__name__)
 
@@ -252,7 +254,7 @@ def mark_attendance():
         cv2.imshow('Attendance', frame)
         
         key = cv2.waitKey(1) & 0xFF
-        if key == 27 or time.time() - start_time > 2:
+        if key == 27:
             break
     
     cap.release()
@@ -312,6 +314,54 @@ def add_attendance(name, nim, class_schedule):
         print(f"{name} not found in users table")
 
     cursor.close()
+
+@app.route("/test_model", methods=["POST"])
+def test_model():
+    response_object = {'status': 'success'}
+    try:
+        test_data_path = request.json.get('test_data_path')
+
+        y_true = []
+        y_pred = []
+
+        userlist = os.listdir(test_data_path)
+        for user in userlist:
+            for imgname in os.listdir(f'{test_data_path}/{user}'):
+                img = cv2.imread(f'{test_data_path}/{user}/{imgname}')
+                resized_face = cv2.resize(img, (50, 50))
+                y_true.append(user)
+                prediction = identify_face([resized_face.ravel()])[0]
+                y_pred.append(prediction)
+
+        cm = confusion_matrix(y_true, y_pred, labels=userlist)
+        accuracy = accuracy_score(y_true, y_pred)
+        report = classification_report(y_true, y_pred, target_names=userlist)
+        precision = precision_score(y_true, y_pred, average='weighted')
+        recall = recall_score(y_true, y_pred, average='weighted')
+        f1 = f1_score(y_true, y_pred, average='weighted')
+
+        # Plot confusion matrix
+        plt.figure(figsize=(10, 8))
+        sns.heatmap(cm, annot=True, fmt='d', cmap='Blues', xticklabels=userlist, yticklabels=userlist)
+        plt.xlabel('Predicted')
+        plt.ylabel('True')
+        plt.title('Confusion Matrix')
+        plt.xticks(fontsize=5)
+        plt.yticks(fontsize=5)
+        plt.savefig('static/confusion_matrix.png')
+
+        response_object['confusion_matrix'] = cm.tolist()
+        response_object['accuracy'] = accuracy
+        response_object['precision'] = precision
+        response_object['recall'] = recall
+        response_object['f1_score'] = f1
+        response_object['classification_report'] = report
+        response_object['confusion_matrix_image'] = 'static/confusion_matrix.png'
+    except Exception as e:
+        response_object['status'] = 'fail'
+        response_object['message'] = str(e)
+
+    return jsonify(response_object)
 
 if __name__ == "__main__":
     app.run(debug=True)
